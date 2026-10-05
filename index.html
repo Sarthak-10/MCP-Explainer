@@ -234,7 +234,12 @@
     const searchRequest = toolCall(1,'search_issues',{query:'issue #421'});
     const searchResult = response(1,textResult('#421 MCP connection timeout\n#438 Tool discovery issue'));
     const issueMessages = [message('tools/call · id 2',toolCall(2,'get_issue',{number:421})),message('Issue details · id 2',response(2,textResult(JSON.stringify(issue))), 'Server → Client')];
-    const resourceURI = 'github://repo/acme/agent-host/file/src/connection.ts';
+    const resourceURI = 'github://repo/acme/agent-host/file/src%2Fconnection.ts';
+    const baselineResult = response(4,{
+      content:[{type:'text',text:'{"testsPassed":41,"testsFailed":1}'}],
+      structuredContent:{testsPassed:41,testsFailed:1},
+      isError:false
+    });
     const resourceMessages = [message('resources/read · id 3',request(3,'resources/read',{uri:resourceURI})),message('Resource contents · id 3',response(3,{contents:[{uri:resourceURI,mimeType:'text/typescript',text:source}]}),'Server → Client')];
     const samplingRequest = request('s1','sampling/createMessage',{messages:[{role:'user',content:{type:'text',text:'Summarize the timer cleanup risk.'}}],maxTokens:180});
     const samplingTool = {name:'inspect_timer',description:'Inspect local timer cleanup evidence',inputSchema:{type:'object',properties:{symbol:{type:'string'}},required:['symbol']}};
@@ -387,7 +392,7 @@
         application:'Host expands a discovered URI template.',protocol:'resources/templates/list → resources/read.',wire:'Template discovery and content read are separate requests.',
         observable:'github://repo/{owner}/{repo}/file/{path}\n    ↓ owner=acme · repo=agent-host · path=src/connection.ts\n' + resourceURI + '\n    ↓ resources/read\nSource content',
         explanation:'The template is a URI pattern, not a tool invocation. Expansion is local; resources/read fetches the concrete resource.',
-        technical:'“resources/templates” is a conceptual category; the wire method is resources/templates/list. URI-template expansion must encode values appropriately; the fixed sample here needs no escaping.',
+        technical:'“resources/templates” is a conceptual category; the wire method is resources/templates/list. Simple {path} expansion encodes src/connection.ts as src%2Fconnection.ts. A reserved {+path} template would instead preserve the slash.',
         messages:[message('resources/templates/list · id 31',request(31,'resources/templates/list',{})),message('Template catalog',response(31,{resourceTemplates:[{uriTemplate:'github://repo/{owner}/{repo}/file/{path}',name:'Repository file',mimeType:'text/typescript'}]}),'Server → Client'),...resourceMessages.map(m => ({...m,payload:{...m.payload,id:32}}))],
         routes:[route(clientToServer,'resources/templates/list'),route(serverToClient,'template pattern'),route(['host-control','mcp-client'],'instantiate concrete URI','application'),route(clientToServer,'resources/read · id 32'),route(serverToClient,'source contents')]
       },
@@ -408,7 +413,7 @@
         explanation:'Progress is intermediate evidence, not a response. The baseline timeout regression fails. Cancellation is a separate, best-effort request to stop work.',
         technical:'A progressToken opts into correlated progress. notifications/cancelled identifies a requestId; it is not a progress percentage or a successful tool result.',
         special:'cancel',tool:'run_tests',
-        messages:[message('run_tests · id 4',toolCall(4,'run_tests',{suite:'connection'},{_meta:{progressToken:'tests-4'}})),...[25,50,75].map(n => message('Progress ' + n + '%',notification('notifications/progress',{progressToken:'tests-4',progress:n,total:100,message:'Running connection tests'}),'Server → Client')),message('Baseline result · id 4',response(4,textResult('41 passed; 1 failed: late response must clear timeout.')),'Server → Client')],
+        messages:[message('run_tests · id 4',toolCall(4,'run_tests',{suite:'connection'},{_meta:{progressToken:'tests-4'}})),...[25,50,75].map(n => message('Progress ' + n + '%',notification('notifications/progress',{progressToken:'tests-4',progress:n,total:100,message:'Running connection tests'}),'Server → Client')),message('Baseline result · id 4',baselineResult,'Server → Client')],
         routes:[route(clientToServer,'run_tests · id 4'),route(['mcp-server','tool'],'start test suite'),...[25,50,75].map(n => route(serverToClient,'notifications/progress · ' + n + '%')),route(toModel,'completed · 41 passed / 1 failed → context')]
       },
       {
@@ -456,7 +461,7 @@
         explanation:'This is another view of the earlier test response, not a new test run or a silently fixed repository. Structured output can drive application logic without reparsing prose.',
         technical:'When outputSchema is declared, structuredContent should conform to it. Keep a text serialization for compatibility. No patch has been applied, so the regression still fails.',
         tool:'run_tests',
-        messages:[message('Structured baseline result · id 4',response(4,{content:[{type:'text',text:'{"testsPassed":41,"testsFailed":1}'}],structuredContent:{testsPassed:41,testsFailed:1},isError:false}),'Server → Client')],
+        messages:[message('Structured baseline result · id 4',baselineResult,'Server → Client')],
         routes:[route(['tool','mcp-server','transport','mcp-client','host-control'],'structuredContent → schema validation')]
       },
       {
@@ -466,8 +471,8 @@
         explanation:'Watch the host-owned loop close. Tool results change the next inference; MCP supplies the standardized interaction surface, not the next-action policy.',
         technical:'Replay is a compressed summary, not fresh execution. The final read_file is an executable tool alternative to reading the earlier resource. Optional Tasks and trust boundaries can be inspected below.',
         special:'final',tool:'read_file',
-        messages:[...issueMessages,message('search_code · id 6',toolCall(6,'search_code',{query:'waitForResponse timeout'})),message('Code matches · id 6',response(6,textResult('src/connection.ts:1 waitForResponse\n tests/connection.test.ts:88 timeout boundary')),'Server → Client'),message('read_file · id 7',toolCall(7,'read_file',{path:'src/connection.ts'})),message('File result · id 7',response(7,textResult(source)),'Server → Client')],
-        routes:[route(['user','host-control','llm'],'user intent → inference','application'),route(callRoundTrip,'search_issues → result → inference'),route(callRoundTrip,'get_issue → result → inference'),route(callRoundTrip,'search_code → matches → inference'),route(callRoundTrip,'read_file → source → inference'),route(callRoundTrip,'run_tests → progress → evidence → inference'),route(['llm','host-control','user'],'final assessment → user','application')]
+        messages:[message('tools/list · replay',request(10,'tools/list',{})),message('Tool catalog · replay',response(10,{tools}),'Server → Client'),message('search_issues · replay',searchRequest),message('Search result · replay',searchResult,'Server → Client'),...issueMessages,...resourceMessages,message('search_code · id 6',toolCall(6,'search_code',{query:'waitForResponse timeout'})),message('Code matches · id 6',response(6,textResult('src/connection.ts:1 waitForResponse\n tests/connection.test.ts:88 timeout boundary')),'Server → Client'),message('read_file · id 7',toolCall(7,'read_file',{path:'src/connection.ts'})),message('File result · id 7',response(7,textResult(source)),'Server → Client'),message('run_tests · replay',toolCall(4,'run_tests',{suite:'connection'},{_meta:{progressToken:'tests-4'}})),message('Progress · replay',notification('notifications/progress',{progressToken:'tests-4',progress:75,total:100}),'Server → Client'),message('Baseline result · replay',baselineResult,'Server → Client')],
+        routes:[route(['user','host-control'],'user intent → host','application'),route(clientToServer,'tools/list · catalog discovery'),route(['mcp-server','transport','mcp-client','host-control','llm'],'definitions → context → inference'),route(callRoundTrip,'search_issues → result → inference'),route(callRoundTrip,'get_issue → result → inference'),route(clientToServer,'resources/read · source context'),route(['mcp-server','transport','mcp-client','host-control','llm'],'resource contents → inference'),route(callRoundTrip,'search_code → matches → inference'),route(callRoundTrip,'read_file → source → inference'),route(['llm','host-control','mcp-client','transport','mcp-server','tool'],'run_tests → execution'),route(serverToClient,'notifications/progress · 75%'),route(toModel,'test evidence → inference'),route(['llm','host-control','user'],'final assessment → user','application')]
       }
     ];
 
