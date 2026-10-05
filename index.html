@@ -1,0 +1,794 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>MCP / A wire-level walkthrough</title>
+  <style>
+    :root { --bg:#0b1016; --panel:#101820; --line:#293541; --text:#dce5ef; --muted:#94a4b5; --app:#b4a1ed; --mcp:#66d5be; --wire:#e2ba75; --mono:ui-monospace,SFMono-Regular,Consolas,monospace; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 system-ui,sans-serif; }
+    button,select { font:inherit; }
+    button { color:var(--text); background:#16212b; border:1px solid var(--line); border-radius:5px; padding:8px 12px; cursor:pointer; }
+    button:hover { background:#22313e; border-color:var(--muted); }
+    button:focus-visible,summary:focus-visible,a:focus-visible { outline:2px solid var(--mcp); outline-offset:3px; }
+    button:disabled { opacity:.4; cursor:default; }
+    button[aria-pressed="true"] { color:var(--mcp); border-color:var(--mcp); }
+    a { color:var(--mcp); }
+    h1,h2,h3,p { margin:0; }
+    h1 { font-size:23px; letter-spacing:-.7px; }
+    h2 { font-size:19px; }
+    h3 { font:11px var(--mono); letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
+    code,pre,.mono { font-family:var(--mono); }
+    code { overflow-wrap:anywhere; }
+    header,main,footer { width:min(1440px,100%); margin:auto; padding:22px 28px; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:20px; border-bottom:1px solid var(--line); }
+    .eyebrow { font:11px var(--mono); letter-spacing:2px; color:var(--mcp); margin-bottom:6px; }
+    .subtitle,.muted { color:var(--muted); }
+    .badge { padding:5px 9px; border:1px solid var(--line); border-radius:4px; font:11px var(--mono); color:var(--muted); }
+    .toolbar,.buttons { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .toolbar { justify-content:space-between; margin-bottom:17px; }
+    .boundary { border-left:3px solid var(--app); background:#151723; padding:10px 14px; margin-bottom:16px; }
+    .boundary strong { color:var(--app); }
+    .workspace { display:grid; grid-template-columns:minmax(0,1fr) 290px; gap:16px; align-items:start; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:7px; min-width:0; }
+    .panel-head { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .legend { display:flex; gap:12px; flex-wrap:wrap; font:10px var(--mono); color:var(--muted); }
+    .dot { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:5px; background:currentColor; }
+    .app-color { color:var(--app); } .mcp-color { color:var(--mcp); } .wire-color { color:var(--wire); }
+    .architecture { position:relative; min-height:268px; padding:46px 18px 50px; background-image:radial-gradient(#34414f55 1px,transparent 1px); background-size:18px 18px; }
+    .actors { position:relative; z-index:2; display:grid; grid-template-columns:.7fr 3.4fr .9fr 1fr .9fr; gap:22px; align-items:center; }
+    .node { position:relative; background:#101820; border:1px solid #3b4856; border-radius:5px; padding:13px 7px; text-align:center; min-width:0; transition:border-color .2s,box-shadow .2s; }
+    .node strong { display:block; font:11px var(--mono); letter-spacing:.4px; }
+    .node small { display:block; color:var(--muted); font-size:10px; margin-top:4px; }
+    .node.active { border-color:var(--mcp); box-shadow:0 0 0 3px #66d5be13; }
+    .node.active[data-kind="application"] { border-color:var(--app); box-shadow:0 0 0 3px #b4a1ed13; }
+    .node.active[data-kind="wire"] { border-color:var(--wire); }
+    .host { position:relative; padding:23px 10px 12px; border:1px dashed #756895; border-radius:7px; background:#171b27; }
+    .host-label { position:absolute; top:-10px; left:10px; background:#171b27; color:var(--app); font:10px var(--mono); padding:2px 7px; }
+    .host-inner { display:grid; grid-template-columns:.85fr 1fr 1.15fr; gap:17px; align-items:center; }
+    .host.active { border-color:var(--app); }
+    #flow-svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:3; overflow:visible; }
+    .connector { fill:none; stroke:#536171; stroke-width:1; }
+    .connector.active { stroke:var(--mcp); stroke-width:1.7; }
+    .connector.control { stroke:var(--app); stroke-dasharray:4 4; }
+    #packet { fill:var(--wire); filter:drop-shadow(0 0 4px #e2ba75); }
+    .flow-label { position:absolute; bottom:15px; left:18px; right:18px; font:11px var(--mono); color:var(--wire); text-align:center; min-height:18px; }
+    .loop-label { position:absolute; top:15px; left:18px; font:10px var(--mono); color:var(--app); }
+    .step-content { padding:20px; min-height:235px; }
+    .step-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+    .step-count { color:var(--mcp); font:12px var(--mono); white-space:nowrap; }
+    #explanation { max-width:83ch; color:#afbfce; margin-top:12px; }
+    .observable { background:#0b121a; border:1px solid var(--line); padding:12px; margin-top:15px; font:12px/1.8 var(--mono); white-space:pre-wrap; overflow-wrap:anywhere; color:var(--mcp); }
+    .layers { padding:16px; }
+    .layer { border-left:2px solid var(--line); padding:10px 12px; margin:12px 0; opacity:.65; }
+    .layer.active { opacity:1; background:#1a2631; }
+    .layer[data-layer="application"] { border-color:var(--app); }
+    .layer[data-layer="protocol"] { border-color:var(--mcp); }
+    .layer[data-layer="wire"] { border-color:var(--wire); }
+    .layer h3 { margin-bottom:6px; }
+    .layer p { font:12px/1.6 var(--mono); overflow-wrap:anywhere; }
+    .context-panel { margin-top:16px; padding:16px; }
+    .context-list { list-style:none; margin:12px 0 0; padding:0; }
+    .context-list li { border:1px solid var(--line); border-left:2px solid var(--app); background:#131c27; margin-top:8px; padding:9px 10px; font:11px/1.5 var(--mono); }
+    .context-list li:last-child { animation:arrive .35s ease-out; }
+    .context-list small { display:block; color:var(--muted); margin-top:4px; }
+    @keyframes arrive { from { opacity:.2; transform:translateY(5px); } to { opacity:1; transform:translateY(0); } }
+    .inspector { margin-top:16px; }
+    .inspector-body { padding:14px 18px; }
+    .message-tabs { display:flex; gap:7px; flex-wrap:wrap; margin-bottom:12px; }
+    .message-tabs button { font:11px var(--mono); text-align:left; overflow-wrap:anywhere; }
+    pre { padding:16px; margin:0; background:#090f15; border:1px solid var(--line); border-radius:4px; white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; max-height:480px; overflow:auto; }
+    .wire-meta { color:var(--wire); font:11px/1.7 var(--mono); margin-bottom:10px; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .technical { padding:16px 20px; border-top:1px solid var(--line); }
+    .technical p { color:var(--muted); font-size:12px; margin-top:6px; }
+    .special { margin-top:15px; padding:14px; background:#0d141c; border:1px solid var(--line); border-radius:5px; }
+    .sequence { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:12px; font:12px var(--mono); }
+    .sequence span { border:1px solid var(--line); border-radius:4px; padding:7px; }
+    .sequence b { color:var(--mcp); }
+    .primitive-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px; }
+    .primitive-grid button { display:flex; flex-direction:column; text-align:left; font:12px var(--mono); }
+    .primitive-grid small { font:11px/1.5 system-ui; color:var(--muted); margin-top:5px; }
+    #primitive-detail { margin-top:12px; font-size:12px; color:var(--muted); }
+    details { margin-top:12px; border:1px solid var(--line); border-radius:5px; padding:12px 15px; }
+    summary { cursor:pointer; color:var(--mcp); font:12px var(--mono); }
+    details p,details ul { color:var(--muted); font-size:12px; margin:10px 0 0; }
+    .timeline-panel { margin-top:18px; padding:16px 18px; }
+    .timeline { display:flex; gap:7px; overflow-x:auto; padding:13px 2px 9px; }
+    .timeline button { flex:0 0 135px; text-align:left; font:11px/1.5 var(--mono); min-height:57px; }
+    .timeline button.completed { border-top:2px solid var(--mcp); }
+    .timeline button.current { background:#17312d; border-color:var(--mcp); }
+    .timeline small { display:block; color:var(--muted); }
+    .navigation { margin-top:16px; display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+    #next { background:#193c35; border-color:#3b8e7c; }
+    .simple .protocol-only { display:none; }
+    [hidden] { display:none !important; }
+    footer { color:var(--muted); font-size:11px; border-top:1px solid var(--line); margin-top:18px; }
+    @media (max-width:1100px) {
+      .workspace { grid-template-columns:minmax(0,1fr) 240px; }
+      .actors { gap:12px; grid-template-columns:.7fr 3.3fr .8fr .9fr .8fr; }
+      .host-inner { gap:9px; } .node strong { font-size:9px; }
+    }
+    @media (max-width:820px) {
+      header,main,footer { padding:17px; } header { align-items:flex-start; flex-direction:column; gap:10px; }
+      .workspace { grid-template-columns:minmax(0,1fr); }
+      aside { display:grid; grid-template-columns:1fr 1fr; gap:12px; } .context-panel { margin:0; }
+      .actors { grid-template-columns:1fr; gap:25px; width:min(310px,100%); margin:auto; }
+      .host-inner { grid-template-columns:1fr; gap:24px; }
+      .node strong { font-size:12px; }
+      .architecture { padding-top:45px; padding-bottom:48px; }
+      .host { padding-top:25px; }
+      .flow-label { font-size:10px; } .step-content { padding:16px; }
+      .step-heading { align-items:flex-start; }
+      .primitive-grid { grid-template-columns:1fr; }
+      .panel-head { flex-wrap:wrap; }
+    }
+    @media (max-width:480px) { aside { grid-template-columns:1fr; } h1 { font-size:21px; } .toolbar { gap:12px; } }
+    @media (prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none !important; transition:none !important; } }
+  </style>
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">MCP / PROTOCOL TRACE LAB</p><h1>From tool decision to next inference.</h1><p class="subtitle">A deterministic, wire-level walkthrough. No network. No model. No server.</p></div>
+    <span class="badge">FICTIONAL GITHUB SERVER · ALL DATA SIMULATED</span>
+  </header>
+  <main>
+    <div class="toolbar">
+      <div class="buttons" role="group" aria-label="Detail level">
+        <button id="simple-view" aria-pressed="false">Simple View</button>
+        <button id="protocol-view" aria-pressed="true">Protocol View</button>
+      </div>
+      <div class="buttons" role="group" aria-label="Lifecycle model">
+        <button id="current-mode" aria-pressed="true">Current MCP</button>
+        <button id="historical-mode" aria-pressed="false">Earlier Session-Based MCP</button>
+      </div>
+    </div>
+    <div class="boundary"><strong>MCP is not the agent loop.</strong> The host mediates model decisions; MCP standardizes the capability boundary. Results return to context before the next inference.</div>
+    <div class="workspace">
+      <section class="panel" aria-label="Protocol walkthrough">
+        <div class="panel-head"><h3>Persistent architecture</h3><div class="legend"><span class="app-color">● control</span><span class="mcp-color">● protocol</span><span class="wire-color">● packet</span></div></div>
+        <div class="architecture" id="architecture">
+          <div class="loop-label">HOST-OWNED AGENT LOOP ↺</div>
+          <div class="actors">
+            <div class="node" id="user" data-kind="application"><strong>USER</strong><small>intent / consent</small></div>
+            <div class="host" id="host"><span class="host-label">HOST / AI APPLICATION</span>
+              <div class="host-inner">
+                <div class="node" id="host-control" data-kind="application"><strong>CONTROL</strong><small>policy + context</small></div>
+                <div class="node" id="llm" data-kind="application"><strong>LLM</strong><small>next action</small></div>
+                <div class="node" id="mcp-client"><strong>MCP CLIENT</strong><small>inside the host</small></div>
+              </div>
+            </div>
+            <div class="node" id="transport" data-kind="wire"><strong>TRANSPORT</strong><small>stdio / HTTP</small></div>
+            <div class="node" id="mcp-server"><strong>MCP SERVER</strong><small>GitHub · fictional</small></div>
+            <div class="node" id="tool"><strong>CAPABILITY</strong><small id="tool-name">tool / data / prompt</small></div>
+          </div>
+          <svg id="flow-svg" aria-hidden="true"><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#677888"/></marker></defs><g id="connectors"></g><circle id="packet" r="4" visibility="hidden"/></svg>
+          <div class="flow-label" id="flow-label">Ready.</div>
+        </div>
+        <div class="step-content">
+          <div class="step-heading"><div><p class="eyebrow" id="phase"></p><h2 id="step-title" aria-live="polite"></h2></div><span class="step-count" id="step-count"></span></div>
+          <p id="explanation"></p>
+          <div class="observable" id="observable"></div>
+          <div id="special-content"></div>
+        </div>
+        <div class="technical protocol-only"><h3>Protocol semantics</h3><p id="technical-detail"></p></div>
+      </section>
+      <aside>
+        <section class="panel layers" aria-label="What's happening">
+          <h3>What's happening?</h3>
+          <div class="layer" data-layer="application"><h3 class="app-color">01 / Application</h3><p id="application-state"></p></div>
+          <div class="layer" data-layer="protocol"><h3 class="mcp-color">02 / MCP</h3><p id="protocol-state"></p></div>
+          <div class="layer" data-layer="wire"><h3 class="wire-color">03 / Wire</h3><p id="wire-state"></p></div>
+        </section>
+        <section class="panel context-panel"><h3>Model / application context</h3><p class="muted" style="font-size:11px;margin-top:6px">Host-selected information, not hidden reasoning.</p><ol id="context-list" class="context-list"></ol></section>
+      </aside>
+    </div>
+    <section class="panel inspector" aria-label="Protocol message inspector">
+      <div class="panel-head"><h3>Protocol message inspector</h3><button id="inspect" aria-expanded="false" aria-controls="inspector-body">View JSON / Expand JSON</button></div>
+      <div id="inspector-body" class="inspector-body" hidden><div id="message-tabs" class="message-tabs" role="group" aria-label="Simulated messages"></div><div id="wire-meta" class="wire-meta"></div><pre id="json-payload" tabindex="0"></pre></div>
+    </section>
+    <div class="navigation">
+      <div class="buttons"><button id="previous">← Previous</button><button id="next">Next →</button></div>
+      <div class="buttons"><button id="autoplay" aria-pressed="false">▶ Auto Play</button><button id="restart">↻ Restart</button><span class="badge">← / → keyboard navigation</span></div>
+    </div>
+    <section class="panel timeline-panel"><h3>Event timeline / click to seek</h3><div class="timeline" id="timeline" aria-label="Walkthrough events"></div></section>
+    <details id="tasks-extension"><summary>Optional branch / MCP Tasks Extension</summary>
+      <p>Not a wrapper required for every call. In the supplied current model, the server chooses task-based execution and returns a task handle. Task state and final output are separate from the ordinary immediate tool result.</p>
+      <div class="sequence"><span>tools/call</span><b>→</b><span>server creates task</span><b>→</b><span>task handle</span><b>→</b><span>tasks/get</span><b>→</b><span>working → completed → result</span></div>
+      <div class="buttons" style="margin-top:12px"><button id="task-trace">Animate task branch</button><button id="task-cancel">Animate task cancellation</button></div>
+      <p id="task-status" role="status">Extension negotiated separately. Earlier experimental core Tasks are a different model.</p>
+      <p class="protocol-only"><code>tasks/get</code> reads task state; <code>tasks/update</code> carries extension-defined updates; <code>tasks/cancel</code> requests cancellation. The branch inspector marks its envelopes as conceptual, not a verified extension schema.</p>
+    </details>
+    <details><summary>Trust boundaries / authority does not travel with a tool name</summary>
+      <div class="sequence"><span>User consent</span><b>→</b><span>Host policy / model access</span><b>→</b><span>Client credentials + authorization</span><b>→</b><span>Server policy</span><b>→</b><span>Tool / external system</span></div>
+      <ul><li>HTTP authentication and authorization sit at the client–server boundary. JSON-RPC IDs are not identity or permission.</li><li>The host approves tool execution, sampling access, and elicitation. “Model-controlled” is a selection convention, not an authorization bypass.</li><li>Tool results, resources, and prompts cross a trust boundary: treat their contents as untrusted data, not higher-priority instructions.</li><li>Roots communicate relevant filesystem scope, not a sandbox or automatic filesystem access. The server must enforce its own access policy.</li><li>stdio commonly inherits local process permissions; it does not use the HTTP authorization flow. This page implements neither transport nor OAuth.</li></ul>
+    </details>
+  </main>
+  <footer>
+    Model reference: the requested <code>2026-07-28</code> stateless lifecycle and server-directed Tasks extension are shown as supplied scenario assumptions; their release schemas could not be independently verified. Historical mode explicitly shows the earlier initialization handshake. JSON in optional Tasks and current capability discovery is labeled conceptual. All other traces are predefined educational examples, not a conformance suite.
+  </footer>
+  <script>
+    'use strict';
+    const $ = id => document.getElementById(id);
+    const request = (id, method, params) => ({jsonrpc:'2.0',id,method,...(params === undefined ? {} : {params})});
+    const response = (id, result) => ({jsonrpc:'2.0',id,result});
+    const notification = (method, params) => ({jsonrpc:'2.0',method,params});
+    const message = (label, payload, direction = 'Client → Server', note = '') => ({label,payload,direction,note});
+    const textResult = text => ({content:[{type:'text',text}],isError:false});
+    const toolCall = (id, name, args, extra = {}) => request(id,'tools/call',{name,arguments:args,...extra});
+    const tools = [
+      {name:'search_issues',description:'Search GitHub issues',inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}},
+      {name:'get_issue',description:'Read issue details',inputSchema:{type:'object',properties:{number:{type:'integer'}},required:['number']}},
+      {name:'search_code',description:'Find matching repository code',inputSchema:{type:'object',properties:{query:{type:'string'}},required:['query']}},
+      {name:'read_file',description:'Read a repository file',inputSchema:{type:'object',properties:{path:{type:'string'}},required:['path']}},
+      {name:'run_tests',description:'Run a scoped test suite',inputSchema:{type:'object',properties:{suite:{type:'string'}},required:['suite']},outputSchema:{type:'object',properties:{testsPassed:{type:'integer'},testsFailed:{type:'integer'}},required:['testsPassed','testsFailed']}}
+    ];
+    const issue = {number:421,title:'MCP connection timeout',body:'A response arriving at the timeout boundary is rejected even after it resolves. Investigate timer cleanup in src/connection.ts.',repository:'acme/agent-host'};
+    const source = 'export function waitForResponse(pending, timeoutMs) {\n  const timer = setTimeout(() => pending.reject(new Error("timeout")), timeoutMs);\n  return pending.promise; // timer is not cleared on settlement\n}';
+    const clientToServer = ['mcp-client','transport','mcp-server'];
+    const serverToClient = [...clientToServer].reverse();
+    const toModel = ['tool','mcp-server','transport','mcp-client','host-control','llm'];
+    const callRoundTrip = ['llm','host-control','mcp-client','transport','mcp-server','tool','mcp-server','transport','mcp-client','host-control','llm'];
+    const route = (nodes, label, kind = 'protocol') => ({nodes,label,kind});
+    const searchRequest = toolCall(1,'search_issues',{query:'issue #421'});
+    const searchResult = response(1,textResult('#421 MCP connection timeout\n#438 Tool discovery issue'));
+    const issueMessages = [message('tools/call · id 2',toolCall(2,'get_issue',{number:421})),message('Issue details · id 2',response(2,textResult(JSON.stringify(issue))), 'Server → Client')];
+    const resourceURI = 'github://repo/acme/agent-host/file/src/connection.ts';
+    const resourceMessages = [message('resources/read · id 3',request(3,'resources/read',{uri:resourceURI})),message('Resource contents · id 3',response(3,{contents:[{uri:resourceURI,mimeType:'text/typescript',text:source}]}),'Server → Client')];
+    const samplingRequest = request('s1','sampling/createMessage',{messages:[{role:'user',content:{type:'text',text:'Summarize the timer cleanup risk.'}}],maxTokens:180});
+    const samplingTool = {name:'inspect_timer',description:'Inspect local timer cleanup evidence',inputSchema:{type:'object',properties:{symbol:{type:'string'}},required:['symbol']}};
+    const contextItems = [
+      {at:0,title:'USER REQUEST',detail:'Investigate #421; find code; run tests; assess fix feasibility.'},
+      {at:5,title:'AVAILABLE TOOL DEFINITIONS',detail:'5 schemas exposed by the server, selected by the host.'},
+      {at:12,title:'ISSUE RESULTS',detail:'#421 connection timeout; #438 discovery issue.'},
+      {at:14,title:'ISSUE DETAILS',detail:'acme/agent-host · timeout-boundary race · src/connection.ts'},
+      {at:15,title:'SOURCE CODE / RESOURCE',detail:'Timer is not cleared when pending.promise settles.'},
+      {at:17,title:'REVIEW TEMPLATE',detail:'Host adds the user-selected reliability review prompt.'},
+      {at:18,title:'TEST RESULT',detail:'Baseline: 41 passed / 1 failed. Timeout race reproduced.'},
+      {at:23,title:'STRUCTURED TEST OUTPUT',detail:'testsPassed: 41 · testsFailed: 1 · schema checked by host.'},
+      {at:24,title:'FILE TOOL RESULT + FINAL ASSESSMENT',detail:'read_file confirms source. Fix appears feasible; no patch has been applied.'}
+    ];
+    const steps = [
+      {
+        id:'user-request',title:'Intent enters the host',phase:'01 / application input',activeNodes:['user','host-control'],layer:'application',
+        application:'User asks for a bounded repository investigation.',protocol:'No MCP operation yet.',wire:'Local UI event; not JSON-RPC.',
+        observable:'Investigate GitHub issue #421, find the relevant code,\nrun the tests, and summarize whether the issue can be fixed.',
+        explanation:'The host receives the request and owns the investigation loop. Every subsequent decision and response in this page is predefined.',
+        technical:'Model inference and host orchestration are outside MCP. The host determines which context and capabilities the model can see.',
+        routes:[route(['user','host-control'],'user intent → host','application')]
+      },
+      {
+        id:'host-client',title:'A client lives inside the host',phase:'02 / ownership',activeNodes:['host','host-control','mcp-client'],layer:'application',
+        application:'Host selects its configured GitHub connection.',protocol:'An MCP client peer represents this server connection.',wire:'Transport choice is host configuration.',
+        observable:'HOST / AI APPLICATION\n  └── MCP CLIENT\n        └── configured peer: fictional GitHub MCP server',
+        explanation:'The client is not a separate external service. It handles protocol messages while the surrounding host owns context, permissions, and model interaction.',
+        technical:'A host can maintain several clients for several servers. One client–server boundary is shown here.',
+        routes:[route(['host-control','mcp-client'],'host uses its client','application')]
+      },
+      {
+        id:'lifecycle',title:'Lifecycle, without mixing eras',phase:'03 / lifecycle',activeNodes:['mcp-client','transport','mcp-server'],layer:'protocol',
+        application:'Host resolves server metadata and compatibility.',protocol:'Current scenario: discovery → request → response.',wire:'No protocol-level initialize handshake in the supplied current model.',
+        observable:'CURRENT / 2026-07-28 SCENARIO\nDiscover server → Request → Response\nNo protocol-level session handshake.',
+        explanation:'Use the lifecycle toggle to compare with earlier documentation. Current-mode discovery is intentionally conceptual: no unverified discovery RPC is invented.',
+        technical:'Stateless does not mean every operation is instantaneous or that an HTTP connection cannot persist. The historical initialize exchange is separately inspectable.',
+        special:'lifecycle',routes:[route(clientToServer,'request · current stateless scenario'),route(serverToClient,'response')]
+      },
+      {
+        id:'capabilities',title:'Feature support is not a tool catalog',phase:'04 / capability surface',activeNodes:['mcp-server','mcp-client'],layer:'protocol',
+        application:'Host checks which protocol features it may use.',protocol:'Server capabilities: tools, resources, prompts, completions.',wire:'Current discovery metadata (conceptual, not an RPC envelope).',
+        observable:'MCP SERVER\n├── Tools           executable operations\n├── Resources       context / data\n├── Prompts         interaction templates\n└── Completions     argument completion',
+        explanation:'Capability information declares supported protocol features. It neither authorizes every operation nor tells the model which tool to call.',
+        technical:'In historical mode, this capability object appears inside the initialize result. The current scenario does not reuse that handshake.',
+        messages:[message('Capability metadata',{capabilities:{tools:{},resources:{},prompts:{},completions:{}}},'Server discovery → Client','Conceptual metadata; current discovery mechanism is not specified here.')],
+        routes:[route(serverToClient,'server advertises feature support')]
+      },
+      {
+        id:'tool-discovery',title:'Discover executable schemas',phase:'05 / tools/list',activeNodes:['mcp-client','mcp-server'],layer:'wire',
+        application:'Host requests the server’s catalog.',protocol:'tools/list → tool definitions.',wire:'JSON-RPC request id 10 → correlated response id 10.',
+        observable:'TOOL NAME        search_issues\nDESCRIPTION      Search GitHub issues\nINPUT SCHEMA     { query: string }\n\nAlso: get_issue · search_code · read_file · run_tests',
+        explanation:'Names route invocations; descriptions help capability selection; input schemas describe valid arguments. A list result can be paginated.',
+        technical:'Tool definitions are data. The host still decides which definitions become model-facing tools. This small catalog fits one page, so nextCursor is absent.',
+        messages:[message('tools/list · id 10',request(10,'tools/list',{})),message('Tool catalog · id 10',response(10,{tools}),'Server → Client')],
+        routes:[route(clientToServer,'tools/list · id 10'),route(serverToClient,'tool definitions · id 10')]
+      },
+      {
+        id:'model-context',title:'The host exposes tools to the model',phase:'06 / context assembly',activeNodes:['mcp-client','host-control','llm'],layer:'application',
+        application:'Host adapts selected schemas into model tool definitions.',protocol:'tools/list result is already received.',wire:'Client → host → model is not another MCP RPC.',
+        observable:'AVAILABLE TOOLS\nsearch_issues(query)  get_issue(number)\nsearch_code(query)    read_file(path)    run_tests(suite)',
+        explanation:'Server exposes capabilities; host makes a selected subset available to the model. Provider-specific function/tool formats are outside MCP.',
+        technical:'Context is application-managed. It may be filtered, transformed, truncated, or rejected by policy before inference.',
+        routes:[route(['mcp-client','host-control','llm'],'definitions → model context','application')]
+      },
+      {
+        id:'tool-choice',title:'A decision, not protocol intelligence',phase:'07 / agent decision',activeNodes:['llm','host-control','mcp-client'],layer:'application',
+        application:'Selected action: search_issues(query="issue #421").',protocol:'No request until the host approves and dispatches.',wire:'Model tool intent is not yet a JSON-RPC message.',
+        observable:'OBSERVABLE DECISION\nLocate issue #421.\n\nSELECTED TOOL  search_issues\nARGUMENTS      query = "issue #421"',
+        explanation:'The model selects an action; the host validates arguments and permission. MCP does not choose the action. No hidden chain-of-thought is shown.',
+        technical:'A model tool-call ID and a JSON-RPC request ID need not be identical. The host maintains the mapping.',
+        routes:[route(['llm','host-control','mcp-client'],'tool intent → policy → dispatch','application')]
+      },
+      {
+        id:'tool-call',title:'Encode a tools/call request',phase:'08 / JSON-RPC envelope',activeNodes:['mcp-client','transport','mcp-server'],layer:'wire',
+        application:'Approved tool choice becomes a protocol request.',protocol:'tools/call { name, arguments }',wire:'JSON-RPC 2.0 request · id 1.',
+        observable:'jsonrpc: "2.0"   id: 1\nmethod: "tools/call"\nname: "search_issues"\narguments: { query: "issue #421" }',
+        explanation:'Inspect the exact simulated payload below. The method identifies the MCP operation; params.name selects the server tool; id correlates the response.',
+        technical:'A request has an id. Notifications omit it. A successful response carries result; a protocol failure carries error instead.',
+        messages:[message('Search request · id 1',searchRequest)],routes:[route(clientToServer,'tools/call · id 1')]
+      },
+      {
+        id:'transport',title:'The format is not the transport',phase:'09 / transport boundary',activeNodes:['mcp-client','transport','mcp-server'],layer:'wire',
+        application:'Host chooses how protocol bytes move.',protocol:'The same logical tools/call envelope.',wire:'stdio framing OR Streamable HTTP exchange.',
+        observable:'JSON-RPC = message format / RPC model\nTransport = movement + framing of messages\n\nstdio: newline-delimited JSON over process streams\nStreamable HTTP: HTTP requests; JSON / SSE responses',
+        explanation:'Neither transport is implemented. Select a carrier below to inspect illustrative wire metadata without changing the current walkthrough step.',
+        technical:'HTTP headers are not fields in a JSON-RPC envelope. SSE can carry messages; JSON-RPC itself is not a transport. Never send credentials in tool arguments.',
+        special:'transport',messages:[message('Same tools/call payload',searchRequest)],routes:[route(clientToServer,'JSON-RPC carried by transport')]
+      },
+      {
+        id:'dispatch',title:'The server dispatches a capability',phase:'10 / server boundary',activeNodes:['mcp-server','tool'],layer:'protocol',
+        application:'No new model decision occurs here.',protocol:'Server validates name + arguments, then dispatches.',wire:'Received request id 1 remains in flight.',
+        observable:'tools/call\n  name: search_issues\n  arguments.query: "issue #421"\n       ↓\nTool dispatcher → search_issues',
+        explanation:'The server maps the request to an implementation and enforces its own policies. It does not autonomously pick the agent’s next tool.',
+        technical:'Unknown methods / malformed params are protocol errors. A tool’s execution failure can instead be represented in a normal result with isError: true.',
+        tool:'search_issues',messages:[message('Received request',searchRequest)],routes:[route(['mcp-server','tool'],'dispatch search_issues')]
+      },
+      {
+        id:'execution',title:'Inside the simulated tool',phase:'11 / implementation boundary',activeNodes:['tool'],layer:'application',
+        application:'Fictional GitHub adapter runs a search.',protocol:'No new MCP method inside the implementation.',wire:'External GitHub traffic is NOT executed.',
+        observable:'search_issues\nSearching → Parsing → Matching\n\n#421 MCP connection timeout\n#438 Tool discovery issue',
+        explanation:'This internal execution is predefined data. MCP standardizes the surface, not how the adapter searches, caches, or talks to external systems.',
+        technical:'Tool code and external systems form another trust boundary. Server access rights are not implied by a client’s tool selection.',
+        tool:'search_issues',routes:[route(['mcp-server','tool'],'simulated search dispatch'),route(['tool','mcp-server'],'implementation returns matches')]
+      },
+      {
+        id:'tool-result',title:'A CallToolResult inside a response',phase:'12 / result envelope',activeNodes:['tool','mcp-server','mcp-client'],layer:'wire',
+        application:'Search matches are now available to the client.',protocol:'CallToolResult: content[] + isError: false.',wire:'JSON-RPC response · id 1 matches the request.',
+        observable:'Tool output → CallToolResult → JSON-RPC result\n\ncontent[0].type = "text"\ncontent[0].text = "#421 MCP connection timeout …"\nisError = false',
+        explanation:'The tool result is the result field of the response, not a new tools/call request. A text block and structuredContent are different result channels.',
+        technical:'Do not confuse JSON-RPC error with isError. Transport delivery, protocol success, and tool execution success are distinct outcomes.',
+        tool:'search_issues',messages:[message('Search response · id 1',searchResult,'Server → Client')],routes:[route(['tool','mcp-server','transport','mcp-client'],'CallToolResult · id 1')]
+      },
+      {
+        id:'propagation',title:'The result becomes inference input',phase:'13 / feedback path',activeNodes:['tool','mcp-server','transport','mcp-client','host-control','llm'],layer:'application',
+        application:'Host adds approved search results to context.',protocol:'The response crossed the MCP boundary.',wire:'Tool → server → transport → client; then host-local propagation.',
+        observable:'TOOL RESULT\n   ↓ host validates / selects content\nADDED TO MODEL / AGENT CONTEXT\n   ↓\nNEXT INFERENCE',
+        explanation:'Watch the result travel back through the full path. Context gains an item only after the packet reaches the model-facing boundary.',
+        technical:'MCP does not automatically append data to a model conversation. That is a host responsibility.',
+        tool:'search_issues',messages:[message('Result being propagated',searchResult,'Server → Client')],routes:[route(toModel,'search result → model context')]
+      },
+      {
+        id:'next-decision',title:'New evidence, next action',phase:'14 / agent loop',activeNodes:['llm','host-control'],layer:'application',
+        application:'Selected action: get_issue(number=421).',protocol:'The agent loop decides whether another RPC is needed.',wire:'No automatic server-driven follow-up.',
+        observable:'AVAILABLE INFORMATION\n#421: MCP connection timeout\n\nNEXT ACTION\nget_issue(421)',
+        explanation:'The new action is a concise observable selection, not internal reasoning. The host may stop, ask the user, or dispatch the selected tool.',
+        technical:'Repeated inference + tool dispatch is agent orchestration. MCP standardizes each interaction, not the repetition policy.',
+        routes:[route(['llm','host-control','mcp-client'],'next approved action','application')]
+      },
+      {
+        id:'second-call',title:'The same boundary, a second call',phase:'15 / repeated invocation',activeNodes:['llm','mcp-client','mcp-server','tool'],layer:'wire',
+        application:'Get full issue details; keep earlier evidence.',protocol:'tools/call → get_issue → CallToolResult.',wire:'Request id 2 / response id 2.',
+        observable:'#421 · acme/agent-host\nTimeout-boundary race\nRelevant source: src/connection.ts\n\nContext now includes issue details.',
+        explanation:'The return path closes another agent-loop iteration. Request IDs correlate protocol messages; context accumulates separately in the host.',
+        technical:'IDs are scoped to the RPC exchange, not repository issue IDs. The integer 421 here is a tool argument.',
+        tool:'get_issue',messages:issueMessages,routes:[route(callRoundTrip,'get_issue · id 2 → result → context')]
+      },
+      {
+        id:'resources',title:'Context is not always an executable tool',phase:'16 / resources + primitive map',activeNodes:['host-control','mcp-client','mcp-server','tool'],layer:'protocol',
+        application:'Application chooses relevant source context.',protocol:'resources/list → resources/read.',wire:'Resource response carries contents[] with URI + MIME type.',
+        observable:'TOOLS       → executable operations · model-selected\nRESOURCES   → context / data · application-selected\nPROMPTS     → instruction templates · user-selected\n\nresources/read: ' + resourceURI,
+        explanation:'Read a source resource without treating it as a tool. The host chooses whether to include the returned content in the model’s context.',
+        technical:'The supplied short URI github://repo/src/connection.ts is an illustrative resource name. This trace uses a concrete URI from the server’s fictional template namespace.',
+        special:'primitives',tool:'source resource',
+        messages:[message('resources/list · id 30',request(30,'resources/list',{})),message('Resource catalog',response(30,{resources:[{uri:resourceURI,name:'connection.ts',mimeType:'text/typescript'}]}),'Server → Client'),...resourceMessages],
+        routes:[route(clientToServer,'resources/list'),route(serverToClient,'resource catalog'),route(clientToServer,'resources/read · id 3'),route(toModel,'resource contents → selected context')]
+      },
+      {
+        id:'resource-templates',title:'Instantiate a URI, then read it',phase:'17 / resource templates',activeNodes:['host-control','mcp-client','mcp-server'],layer:'protocol',
+        application:'Host expands a discovered URI template.',protocol:'resources/templates/list → resources/read.',wire:'Template discovery and content read are separate requests.',
+        observable:'github://repo/{owner}/{repo}/file/{path}\n    ↓ owner=acme · repo=agent-host · path=src/connection.ts\n' + resourceURI + '\n    ↓ resources/read\nSource content',
+        explanation:'The template is a URI pattern, not a tool invocation. Expansion is local; resources/read fetches the concrete resource.',
+        technical:'“resources/templates” is a conceptual category; the wire method is resources/templates/list. URI-template expansion must encode values appropriately; the fixed sample here needs no escaping.',
+        messages:[message('resources/templates/list · id 31',request(31,'resources/templates/list',{})),message('Template catalog',response(31,{resourceTemplates:[{uriTemplate:'github://repo/{owner}/{repo}/file/{path}',name:'Repository file',mimeType:'text/typescript'}]}),'Server → Client'),...resourceMessages.map(m => ({...m,payload:{...m.payload,id:32}}))],
+        routes:[route(clientToServer,'resources/templates/list'),route(serverToClient,'template pattern'),route(['host-control','mcp-client'],'instantiate concrete URI','application'),route(clientToServer,'resources/read · id 32'),route(serverToClient,'source contents')]
+      },
+      {
+        id:'prompts',title:'User-selected instruction structures',phase:'18 / prompts + control semantics',activeNodes:['user','host-control','mcp-client','mcp-server'],layer:'protocol',
+        application:'User selects review-code; host assembles its messages.',protocol:'prompts/list → prompts/get.',wire:'Prompt arguments → structured prompt messages.',
+        observable:'review-code(language="TypeScript", focus="reliability")\n\nPROMPTS    user-controlled\nRESOURCES  application-controlled\nTOOLS      model-controlled',
+        explanation:'These labels describe typical selection semantics, not absolute privileges. Click a primitive to inspect its control boundary.',
+        technical:'Fetching a prompt neither executes a tool nor runs inference. The host decides how retrieved messages fit its instruction hierarchy.',
+        special:'primitives',
+        messages:[message('prompts/list · id 40',request(40,'prompts/list',{})),message('Prompt catalog',response(40,{prompts:[{name:'review-code',description:'Review source for reliability',arguments:[{name:'language',required:true},{name:'focus',required:true}]}]}),'Server → Client'),message('prompts/get · id 41',request(41,'prompts/get',{name:'review-code',arguments:{language:'TypeScript',focus:'reliability'}})),message('Prompt messages',response(41,{description:'Reliability review',messages:[{role:'user',content:{type:'text',text:'Review the provided TypeScript source for reliability. Report observable failure modes and test evidence.'}}]}),'Server → Client')],
+        routes:[route(['user','host-control'],'user selects template','application'),route(clientToServer,'prompts/list'),route(serverToClient,'prompt catalog'),route(clientToServer,'prompts/get'),route(['mcp-server','transport','mcp-client','host-control','llm'],'template messages → host-selected context')]
+      },
+      {
+        id:'progress',title:'Notifications do not complete a request',phase:'19 / progress + cancellation',activeNodes:['mcp-client','mcp-server','tool'],layer:'wire',
+        application:'Agent selects run_tests; host displays reported progress.',protocol:'tools/call + notifications/progress → final result.',wire:'Request id 4; progress token "tests-4"; notifications have no id.',
+        observable:'run_tests("connection")\n25% → 50% → 75% → completed\nBASELINE: 41 passed / 1 failed\n\nOptional branch: cancel a separate request id 5.',
+        explanation:'Progress is intermediate evidence, not a response. The baseline timeout regression fails. Cancellation is a separate, best-effort request to stop work.',
+        technical:'A progressToken opts into correlated progress. notifications/cancelled identifies a requestId; it is not a progress percentage or a successful tool result.',
+        special:'cancel',tool:'run_tests',
+        messages:[message('run_tests · id 4',toolCall(4,'run_tests',{suite:'connection'},{_meta:{progressToken:'tests-4'}})),...[25,50,75].map(n => message('Progress ' + n + '%',notification('notifications/progress',{progressToken:'tests-4',progress:n,total:100,message:'Running connection tests'}),'Server → Client')),message('Baseline result · id 4',response(4,textResult('41 passed; 1 failed: late response must clear timeout.')),'Server → Client')],
+        routes:[route(clientToServer,'run_tests · id 4'),route(['mcp-server','tool'],'start test suite'),...[25,50,75].map(n => route(serverToClient,'notifications/progress · ' + n + '%')),route(toModel,'completed · 41 passed / 1 failed → context')]
+      },
+      {
+        id:'elicitation',title:'The server asks through the host',phase:'20 / client capability',activeNodes:['mcp-server','mcp-client','host-control','user'],layer:'protocol',
+        application:'Host presents a form; user chooses staging.',protocol:'Server → client: elicitation/create; client → server: response.',wire:'Reverse-direction request id "e1".',
+        observable:'OPTIONAL COUNTERFACTUAL BRANCH: deploy_fix\nServer needs deployment environment.\nUser input: staging\n\nNo deployment is performed. The investigation remains read-only.',
+        explanation:'deploy_fix is a hypothetical separately enabled tool, not one of the five tools exposed to this investigation. Elicitation requests user data; the host can accept, decline, or cancel.',
+        technical:'The server does not contact the user directly. Form-mode elicitation requests a schema; its response includes an action and accepted content. Do not solicit secrets through this form.',
+        messages:[message('elicitation/create · e1',request('e1','elicitation/create',{mode:'form',message:'Please provide the deployment environment.',requestedSchema:{type:'object',properties:{environment:{type:'string',enum:['staging','production']}},required:['environment']}}),'Server → Client'),message('User accepts · e1',response('e1',{action:'accept',content:{environment:'staging'}}),'Client → Server')],
+        routes:[route(['mcp-server','transport','mcp-client','host-control','user'],'elicitation request → user'),route(['user','host-control','mcp-client','transport','mcp-server'],'user input → server','application')]
+      },
+      {
+        id:'sampling',title:'Model access remains host-mediated',phase:'21 / reverse-direction RPC',activeNodes:['mcp-server','mcp-client','host-control','llm'],layer:'protocol',
+        application:'Host may approve, constrain, or decline sampling.',protocol:'sampling/createMessage is initiated by the server.',wire:'Server request "s1" → client response "s1".',
+        observable:'MCP SERVER → CLIENT / HOST → LLM\n                  ↓ policy + model access\nMCP SERVER ← CLIENT / HOST ← generated result',
+        explanation:'Sampling reverses the usual request direction. The server requests generation through the client’s host; it does not own or directly call the model.',
+        technical:'Model hints and preferences are requests, not guarantees. This branch’s generated result goes back to the server and is not automatically added to the main investigation context.',
+        messages:[message('sampling/createMessage · s1',samplingRequest,'Server → Client'),message('Sampling result · s1',response('s1',{role:'assistant',content:{type:'text',text:'Clear the timeout on both resolve and reject; add a boundary-race regression test.'},model:'simulated-model',stopReason:'endTurn'}),'Client → Server')],
+        routes:[route(['mcp-server','transport','mcp-client','host-control','llm'],'sampling request → host-approved model'),route(['llm','host-control','mcp-client','transport','mcp-server'],'sampled message → server')]
+      },
+      {
+        id:'sampling-tools',title:'A server-owned loop, using hosted sampling',phase:'22 / sampling with tools',activeNodes:['mcp-server','mcp-client','host-control','llm','tool'],layer:'protocol',
+        application:'Host authorizes sampling; server orchestrates the inner loop.',protocol:'Sampling offers tools; model returns tool_use; server provides tool_result.',wire:'Two server → client sampling requests, each with its own response.',
+        observable:'SERVER-SIDE AGENTIC LOOP\nServer → host / model → tool_use\nServer executes its offered inspect_timer capability\nServer → sampling with tool_result → model\nServer ← final sampling result\n\nOuter investigation loop still belongs to the host.',
+        explanation:'Tool-enabled sampling does not silently grant all of the host’s tools to a server. Here the server supplies a tool definition, executes that selected tool, and continues sampling with the result.',
+        technical:'Host gates model access. Server owns this inner orchestration. This differs from the ordinary host-owned loop; the offered inspect_timer is separate from the main five-tool catalog.',
+        tool:'inspect_timer',
+        messages:[message('Tool-enabled sampling · s2',request('s2','sampling/createMessage',{messages:[{role:'user',content:{type:'text',text:'Inspect timeout cleanup.'}}],tools:[samplingTool],toolChoice:{mode:'auto'},maxTokens:200}),'Server → Client'),message('Model tool_use · s2',response('s2',{role:'assistant',content:{type:'tool_use',id:'timer-1',name:'inspect_timer',input:{symbol:'waitForResponse'}},model:'simulated-model',stopReason:'toolUse'}),'Client → Server'),message('Continue with tool_result · s3',request('s3','sampling/createMessage',{messages:[{role:'user',content:{type:'text',text:'Inspect timeout cleanup.'}},{role:'assistant',content:{type:'tool_use',id:'timer-1',name:'inspect_timer',input:{symbol:'waitForResponse'}}},{role:'user',content:{type:'tool_result',toolUseId:'timer-1',content:[{type:'text',text:'Timer remains active after settlement.'}]}}],tools:[samplingTool],maxTokens:200}),'Server → Client'),message('Final sample · s3',response('s3',{role:'assistant',content:{type:'text',text:'Timer cleanup on settlement is missing.'},model:'simulated-model',stopReason:'endTurn'}),'Client → Server')],
+        routes:[route(['mcp-server','transport','mcp-client','host-control','llm'],'s2 · sampling with offered tool'),route(['llm','host-control','mcp-client','transport','mcp-server'],'tool_use → server'),route(['mcp-server','tool','mcp-server'],'server executes inspect_timer'),route(['mcp-server','transport','mcp-client','host-control','llm'],'s3 · tool_result → next sample'),route(['llm','host-control','mcp-client','transport','mcp-server'],'final sampling result → server')]
+      },
+      {
+        id:'roots',title:'Roots communicate scope, not enforcement',phase:'23 / client filesystem boundaries',activeNodes:['host-control','mcp-client','mcp-server'],layer:'protocol',
+        application:'Host exposes relevant workspace roots.',protocol:'Server → client: roots/list.',wire:'Response contains file:// URIs, not raw path strings.',
+        observable:'HOST ROOTS\n├── /workspace/repo\n└── /workspace/tests\n\nAdvertised scope ≠ filesystem sandbox\nAdvertised scope ≠ permission grant',
+        explanation:'Roots tell the server which filesystem boundaries are relevant. Server policy and actual process permissions must enforce access.',
+        technical:'Roots, sampling, and elicitation are client capabilities. Server tools, resources, and prompts are a different side of the capability map.',
+        special:'primitives',
+        messages:[message('roots/list · r1',request('r1','roots/list',{}),'Server → Client'),message('Root boundaries · r1',response('r1',{roots:[{uri:'file:///workspace/repo',name:'Repository'},{uri:'file:///workspace/tests',name:'Tests'}]}),'Client → Server')],
+        routes:[route(serverToClient,'roots/list · r1'),route(['host-control','mcp-client','transport','mcp-server'],'approved roots → server')]
+      },
+      {
+        id:'structured-output',title:'Text for context, structure for consumption',phase:'24 / output contracts',activeNodes:['tool','mcp-server','mcp-client','host-control'],layer:'wire',
+        application:'Host checks typed evidence before consuming it.',protocol:'CallToolResult contains content and structuredContent.',wire:'Response id 4; output schema came from tools/list.',
+        observable:'SAME BASELINE RESULT / TWO REPRESENTATIONS\nText: "41 passed / 1 failed"\nStructured: { testsPassed: 41, testsFailed: 1 }\n\nApplication can render counts and validate the contract.',
+        explanation:'This is another view of the earlier test response, not a new test run or a silently fixed repository. Structured output can drive application logic without reparsing prose.',
+        technical:'When outputSchema is declared, structuredContent should conform to it. Keep a text serialization for compatibility. No patch has been applied, so the regression still fails.',
+        tool:'run_tests',
+        messages:[message('Structured baseline result · id 4',response(4,{content:[{type:'text',text:'{"testsPassed":41,"testsFailed":1}'}],structuredContent:{testsPassed:41,testsFailed:1},isError:false}),'Server → Client')],
+        routes:[route(['tool','mcp-server','transport','mcp-client','host-control'],'structuredContent → schema validation')]
+      },
+      {
+        id:'complete-loop',title:'The protocol boundary closes an agent loop',phase:'25 / complete investigation',activeNodes:['user','host','llm','mcp-client','transport','mcp-server','tool'],layer:'application',
+        application:'Read file → consume evidence → deliver final assessment.',protocol:'Repeated tools/call interactions; optional capabilities remain distinct.',wire:'Correlated requests / responses; notifications only when relevant.',
+        observable:'search_issues → result → LLM → get_issue → result → LLM\nresources/read → context → read_file → result → LLM\nrun_tests → progress → result → LLM → final response\n\nFINDING: Fix appears feasible. Clear the timeout on settlement.\nEVIDENCE: missing cleanup; baseline 41 passed / 1 failed.\nNEXT: implement cleanup and rerun the regression. No fix applied.',
+        explanation:'Watch the host-owned loop close. Tool results change the next inference; MCP supplies the standardized interaction surface, not the next-action policy.',
+        technical:'Replay is a compressed summary, not fresh execution. The final read_file is an executable tool alternative to reading the earlier resource. Optional Tasks and trust boundaries can be inspected below.',
+        special:'final',tool:'read_file',
+        messages:[...issueMessages,message('search_code · id 6',toolCall(6,'search_code',{query:'waitForResponse timeout'})),message('Code matches · id 6',response(6,textResult('src/connection.ts:1 waitForResponse\n tests/connection.test.ts:88 timeout boundary')),'Server → Client'),message('read_file · id 7',toolCall(7,'read_file',{path:'src/connection.ts'})),message('File result · id 7',response(7,textResult(source)),'Server → Client')],
+        routes:[route(['user','host-control','llm'],'user intent → inference','application'),route(callRoundTrip,'search_issues → result → inference'),route(callRoundTrip,'get_issue → result → inference'),route(callRoundTrip,'search_code → matches → inference'),route(callRoundTrip,'read_file → source → inference'),route(callRoundTrip,'run_tests → progress → evidence → inference'),route(['llm','host-control','user'],'final assessment → user','application')]
+      }
+    ];
+
+    const historicalMessages = [
+      message('initialize · id 0',request(0,'initialize',{protocolVersion:'2025-11-25',capabilities:{roots:{listChanged:true},sampling:{tools:{}},elicitation:{form:{}}},clientInfo:{name:'trace-host',version:'1.0'}})),
+      message('initialize result · id 0',response(0,{protocolVersion:'2025-11-25',capabilities:{tools:{},resources:{},prompts:{},completions:{}},serverInfo:{name:'fictional-github',version:'1.0'}}),'Server → Client'),
+      message('notifications/initialized',notification('notifications/initialized',{}))
+    ];
+    const primitiveDescriptions = {
+      Tools:'Model-controlled selection: the model proposes a tool; host policy authorizes dispatch; server policy authorizes execution. MCP never chooses the next action.',
+      Resources:'Application-controlled selection: the host chooses relevant data and whether it enters model context. Reading a resource is not executing a tool.',
+      Prompts:'User-controlled selection: a user chooses a reusable interaction template. The host retrieves its messages and fits them into application context.',
+      Roots:'Client capability: communicate relevant file:// workspace boundaries. They do not enforce a sandbox.',
+      Sampling:'Client capability: server requests model generation through a host-controlled policy and model-access boundary.',
+      Elicitation:'Client capability: server asks the host to obtain user input. The user can accept, decline, or cancel.'
+    };
+    let currentStep = 0;
+    let viewMode = 'protocol';
+    let isPlaying = false;
+    let lifecycleMode = 'current';
+    let transportMode = 'http';
+    let messageIndex = 0;
+    let runToken = 0;
+    let animationFrame = 0;
+    let playTimer = 0;
+    let animationRunning = false;
+    let branchMessages = null;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const links = [['user','host-control'],['host-control','llm'],['llm','mcp-client'],['host-control','mcp-client'],['mcp-client','transport'],['transport','mcp-server'],['mcp-server','tool']];
+
+    function center(id) {
+      const rect = $(id).getBoundingClientRect();
+      const area = $('architecture').getBoundingClientRect();
+      return {x:rect.left-area.left+rect.width/2,y:rect.top-area.top+rect.height/2};
+    }
+    function pathBetween(from, to) {
+      const a = center(from), b = center(to);
+      const aRect = $(from).getBoundingClientRect(), bRect = $(to).getBoundingClientRect();
+      const dx = b.x-a.x, dy = b.y-a.y;
+      const scaleA = Math.min(dx ? aRect.width/2/Math.abs(dx) : Infinity,dy ? aRect.height/2/Math.abs(dy) : Infinity);
+      const scaleB = Math.min(dx ? bRect.width/2/Math.abs(dx) : Infinity,dy ? bRect.height/2/Math.abs(dy) : Infinity);
+      if ([from,to].includes('host-control') && [from,to].includes('mcp-client')) {
+        if (Math.abs(dx) > Math.abs(dy)) {
+          const lower = Math.max(a.y+aRect.height/2,b.y+bRect.height/2)+9;
+          return `M ${a.x} ${a.y+aRect.height/2} L ${a.x} ${lower} L ${b.x} ${lower} L ${b.x} ${b.y+bRect.height/2}`;
+        }
+        const right = Math.max(a.x+aRect.width/2,b.x+bRect.width/2)+6;
+        return `M ${a.x+aRect.width/2} ${a.y} L ${right} ${a.y} L ${right} ${b.y} L ${b.x+bRect.width/2} ${b.y}`;
+      }
+      return `M ${a.x+dx*scaleA} ${a.y+dy*scaleA} L ${b.x-dx*scaleB} ${b.y-dy*scaleB}`;
+    }
+    function renderNodes() {
+      const step = steps[currentStep];
+      document.querySelectorAll('.node,.host').forEach(node => node.classList.toggle('active',step.activeNodes.includes(node.id)));
+      $('tool-name').textContent = step.tool || 'tool / data / prompt';
+      $('connectors').replaceChildren();
+      links.forEach(([a,b]) => {
+        const path = document.createElementNS(svgNS,'path');
+        path.setAttribute('d',pathBetween(a,b));
+        path.setAttribute('class','connector' + (a === 'host-control' || a === 'llm' || a === 'user' ? ' control' : ''));
+        path.setAttribute('marker-end','url(#arrow)');
+        path.dataset.from = a; path.dataset.to = b;
+        $('connectors').append(path);
+      });
+    }
+    function renderContext(settled = true) {
+      $('context-list').replaceChildren();
+      contextItems.filter(item => item.at < currentStep || (settled && item.at === currentStep)).forEach(item => {
+        const li = document.createElement('li');
+        const title = document.createElement('span'), detail = document.createElement('small');
+        title.textContent = item.title; detail.textContent = item.detail;
+        li.append(title,detail); $('context-list').append(li);
+      });
+    }
+    function activeMessages() {
+      if (branchMessages) return branchMessages;
+      if (currentStep === 2 && lifecycleMode === 'historical') return historicalMessages;
+      if (currentStep === 3 && lifecycleMode === 'historical') return [historicalMessages[1]];
+      return steps[currentStep].messages || [];
+    }
+    function renderPacket() {
+      const messages = activeMessages();
+      $('message-tabs').replaceChildren();
+      $('inspect').disabled = messages.length === 0;
+      if (!messages.length) {
+        $('inspector-body').hidden = true; $('inspect').setAttribute('aria-expanded','false');
+        $('json-payload').textContent = ''; $('wire-meta').textContent = '';
+        return;
+      }
+      messageIndex = Math.min(messageIndex,messages.length-1);
+      messages.forEach((msg,index) => {
+        const button = document.createElement('button');
+        button.textContent = msg.label;
+        button.setAttribute('aria-pressed',String(index === messageIndex));
+        button.addEventListener('click',() => { messageIndex = index; renderPacket(); });
+        $('message-tabs').append(button);
+      });
+      const msg = messages[messageIndex];
+      $('json-payload').textContent = JSON.stringify(msg.payload,null,2);
+      let carrier = 'Logical message only. No bytes are transmitted.';
+      if (currentStep === 8) carrier = transportMode === 'stdio'
+        ? 'stdio example: UTF-8 JSON + newline on stdin/stdout.\nNo HTTP headers; diagnostic logging belongs on stderr.'
+        : 'Illustrative HTTP request headers (not JSON fields):\nContent-Type: application/json\nAccept: application/json, text/event-stream\nMCP-Protocol-Version: ' + (lifecycleMode === 'current' ? '2026-07-28 (scenario)' : '2025-11-25') + '\nResponse carrier: application/json or text/event-stream.';
+      $('wire-meta').textContent = msg.direction + '\n' + carrier + (msg.note ? '\nNOTE: ' + msg.note : '');
+    }
+    function renderTechnicalDetails() {
+      const step = steps[currentStep];
+      $('application-state').textContent = step.application;
+      $('protocol-state').textContent = step.protocol;
+      $('wire-state').textContent = step.wire;
+      $('technical-detail').textContent = step.technical;
+      if (lifecycleMode === 'historical' && currentStep === 2) {
+        $('protocol-state').textContent = 'Historical: initialize → notifications/initialized → normal requests.';
+        $('wire-state').textContent = 'Request id 0 → response id 0 → notification without id.';
+      } else if (lifecycleMode === 'historical' && currentStep === 3) {
+        $('wire-state').textContent = 'Historical initialize response advertises server capabilities.';
+      }
+      document.querySelectorAll('.layer').forEach(layer => layer.classList.toggle('active',layer.dataset.layer === step.layer));
+    }
+    function sequence(container, labels) {
+      const div = document.createElement('div'); div.className = 'sequence';
+      labels.forEach((label,i) => {
+        if (i) { const arrow = document.createElement('b'); arrow.textContent = '→'; div.append(arrow); }
+        const span = document.createElement('span'); span.textContent = label; div.append(span);
+      });
+      container.append(div);
+    }
+    function renderSpecial() {
+      const container = $('special-content'); container.replaceChildren();
+      const special = steps[currentStep].special;
+      if (!special) return;
+      const box = document.createElement('div'); box.className = 'special'; container.append(box);
+      if (special === 'lifecycle') {
+        const heading = document.createElement('h3');
+        heading.textContent = lifecycleMode === 'current' ? 'Current model / supplied stateless scenario' : 'Historical / session-based lifecycle';
+        box.append(heading);
+        sequence(box,lifecycleMode === 'current' ? ['Discover server','Request','Response'] : ['initialize','initialize result','notifications/initialized','session-based requests']);
+      } else if (special === 'transport') {
+        const group = document.createElement('div'); group.className = 'buttons';
+        ['http','stdio'].forEach(mode => {
+          const button = document.createElement('button');
+          button.textContent = mode === 'http' ? 'Streamable HTTP' : 'stdio';
+          button.setAttribute('aria-pressed',String(transportMode === mode));
+          button.addEventListener('click',() => { transportMode = mode; renderSpecial(); renderPacket(); });
+          group.append(button);
+        }); box.append(group);
+      } else if (special === 'primitives' || special === 'final') {
+        const heading = document.createElement('h3'); heading.textContent = 'Server surface / client capabilities'; box.append(heading);
+        const grid = document.createElement('div'); grid.className = 'primitive-grid';
+        const descriptions = ['Model-controlled · actions','Application-controlled · context','User-controlled · templates','Client · filesystem scope','Client · model access','Client · user input'];
+        Object.keys(primitiveDescriptions).forEach((name,i) => {
+          const button = document.createElement('button'), small = document.createElement('small');
+          button.textContent = name; small.textContent = descriptions[i]; button.append(small);
+          button.setAttribute('aria-expanded','false');
+          button.addEventListener('click',() => {
+            grid.querySelectorAll('button').forEach(b => b.setAttribute('aria-expanded',String(b === button)));
+            $('primitive-detail').textContent = primitiveDescriptions[name];
+          }); grid.append(button);
+        });
+        const detail = document.createElement('p'); detail.id = 'primitive-detail'; detail.textContent = 'Select a primitive to inspect its control semantics.';
+        box.append(grid,detail);
+        if (special === 'final') sequence(box,['LLM decides','Client requests','Server dispatches','Result returns','Host adds context','LLM decides again ↺']);
+      } else if (special === 'cancel') {
+        const button = document.createElement('button'); button.textContent = 'Replay cancellation branch';
+        button.addEventListener('click',() => {
+          setPlaying(false);
+          branchMessages = [
+            message('Separate run · id 5',toolCall(5,'run_tests',{suite:'full'})),
+            message('notifications/cancelled',notification('notifications/cancelled',{requestId:5,reason:'User stopped the optional full-suite run.'}))
+          ];
+          messageIndex = 0; renderPacket(); openInspector();
+          playRoutes([route(clientToServer,'tools/call · id 5'),route(['mcp-server','tool'],'start optional full suite'),route(clientToServer,'notifications/cancelled · requestId 5'),route(['mcp-server','tool'],'best-effort cancellation · simulated operation stopped')],false);
+        }); box.append(button);
+      }
+    }
+    function renderTimeline() {
+      $('timeline').replaceChildren();
+      steps.forEach((step,index) => {
+        const button = document.createElement('button'), small = document.createElement('small');
+        button.className = (index < currentStep ? 'completed ' : '') + (index === currentStep ? 'current' : '');
+        button.textContent = String(index+1).padStart(2,'0') + ' / ' + step.title;
+        small.textContent = index < currentStep ? 'completed' : index === currentStep ? 'current event' : 'upcoming';
+        button.append(small);
+        if (index === currentStep) button.setAttribute('aria-current','step');
+        button.addEventListener('click',() => navigate(index));
+        $('timeline').append(button);
+      });
+      const current = $('timeline').children[currentStep];
+      $('timeline').scrollLeft = Math.max(0,current.offsetLeft-$('timeline').offsetLeft-20);
+    }
+    function cancelAnimation() {
+      runToken++; cancelAnimationFrame(animationFrame); clearTimeout(playTimer);
+      animationRunning = false; $('packet').setAttribute('visibility','hidden');
+    }
+    function playRoutes(routes, updateContext = true) {
+      cancelAnimation();
+      const token = runToken;
+      animationRunning = true;
+      const segments = routes.flatMap(r => r.nodes.slice(0,-1).map((from,index) => ({from,to:r.nodes[index+1],label:r.label,kind:r.kind})));
+      let segmentIndex = 0;
+      const duration = reducedMotion.matches ? 35 : (currentStep === 24 ? 190 : 380);
+      function nextSegment() {
+        if (token !== runToken) return;
+        if (segmentIndex >= segments.length) {
+          animationRunning = false;
+          $('packet').setAttribute('visibility','hidden');
+          document.querySelectorAll('.connector').forEach(p => p.classList.remove('active'));
+          $('flow-label').textContent = 'TRACE COMPLETE / ' + (routes.at(-1)?.label || 'ready');
+          if (updateContext) renderContext();
+          scheduleNext();
+          return;
+        }
+        const seg = segments[segmentIndex++];
+        $('flow-label').textContent = seg.label + ' / ' + seg.from + ' → ' + seg.to;
+        document.querySelectorAll('.connector').forEach(path => path.classList.toggle('active',
+          (path.dataset.from === seg.from && path.dataset.to === seg.to) || (path.dataset.from === seg.to && path.dataset.to === seg.from)));
+        const start = performance.now();
+        function tick(now) {
+          if (token !== runToken) return;
+          const progress = Math.min(1,(now-start)/duration);
+          const path = document.createElementNS(svgNS,'path');
+          path.setAttribute('d',pathBetween(seg.from,seg.to));
+          const point = path.getPointAtLength(path.getTotalLength()*progress);
+          $('packet').setAttribute('cx',point.x);
+          $('packet').setAttribute('cy',point.y);
+          $('packet').style.fill = seg.kind === 'application' ? 'var(--app)' : 'var(--wire)';
+          $('packet').setAttribute('visibility',reducedMotion.matches ? 'hidden' : 'visible');
+          if (progress < 1) animationFrame = requestAnimationFrame(tick);
+          else nextSegment();
+        }
+        animationFrame = requestAnimationFrame(tick);
+      }
+      nextSegment();
+    }
+    function stepRoutes() {
+      if (currentStep === 2 && lifecycleMode === 'historical') return [
+        route(clientToServer,'historical initialize · id 0'),route(serverToClient,'historical initialize result · id 0'),route(clientToServer,'historical notifications/initialized')
+      ];
+      return steps[currentStep].routes || [];
+    }
+    function renderStep() {
+      cancelAnimation(); branchMessages = null; messageIndex = 0;
+      const step = steps[currentStep];
+      $('phase').textContent = step.phase;
+      $('step-title').textContent = step.title;
+      $('step-count').textContent = `Step ${currentStep+1} / ${steps.length}`;
+      $('explanation').textContent = step.explanation;
+      $('observable').textContent = currentStep === 2 && lifecycleMode === 'historical'
+        ? 'HISTORICAL / SESSION-BASED LIFECYCLE\ninitialize → initialize result → notifications/initialized\nThen normal requests within the earlier lifecycle.'
+        : step.observable;
+      $('previous').disabled = currentStep === 0; $('next').disabled = currentStep === steps.length-1;
+      renderNodes(); renderTechnicalDetails(); renderSpecial(); renderContext(false); renderPacket(); renderTimeline();
+      playRoutes(stepRoutes());
+    }
+    function navigate(index) {
+      setPlaying(false); currentStep = Math.max(0,Math.min(steps.length-1,index)); renderStep();
+    }
+    function scheduleNext() {
+      clearTimeout(playTimer);
+      if (!isPlaying) return;
+      if (currentStep === steps.length-1) { setPlaying(false); return; }
+      playTimer = setTimeout(() => { currentStep++; renderStep(); },2400);
+    }
+    function setPlaying(value) {
+      isPlaying = value; clearTimeout(playTimer);
+      $('autoplay').setAttribute('aria-pressed',String(value));
+      $('autoplay').textContent = value ? 'Ⅱ Pause' : '▶ Auto Play';
+      if (value && !animationRunning) scheduleNext();
+    }
+    function setView(mode) {
+      viewMode = mode; document.body.classList.toggle('simple',mode === 'simple');
+      $('simple-view').setAttribute('aria-pressed',String(mode === 'simple'));
+      $('protocol-view').setAttribute('aria-pressed',String(mode === 'protocol'));
+      requestAnimationFrame(renderNodes);
+    }
+    function setLifecycle(mode) {
+      lifecycleMode = mode;
+      $('current-mode').setAttribute('aria-pressed',String(mode === 'current'));
+      $('historical-mode').setAttribute('aria-pressed',String(mode === 'historical'));
+      renderStep();
+    }
+    function openInspector() { $('inspector-body').hidden = false; $('inspect').setAttribute('aria-expanded','true'); }
+    function taskBranch(cancel) {
+      setPlaying(false);
+      branchMessages = [
+        message('Task-producing tool call (conceptual)',toolCall(50,'run_tests',{suite:'full'}),'Client → Server','Tasks extension scenario; exact creation/result schema is not asserted.'),
+        message('Task handle (conceptual)',response(50,{task:{taskId:'task-9',status:'working'}}),'Server → Client','Illustrative server-directed task creation.'),
+        message('tasks/get (conceptual)',request(51,'tasks/get',{taskId:'task-9'}),'Client → Server','Illustrative extension envelope, not a verified schema.'),
+        ...(cancel
+          ? [message('tasks/cancel (conceptual)',request(52,'tasks/cancel',{taskId:'task-9'}),'Client → Server','Illustrative extension cancellation.')]
+          : [message('tasks/update (conceptual)',notification('tasks/update',{taskId:'task-9',status:'completed'}),'Server → Client','Illustrative extension update; notification shape is not asserted.')])
+      ];
+      messageIndex = 0; renderPacket(); openInspector();
+      $('task-status').textContent = cancel ? 'Optional task branch: task-9 → cancellation requested → simulated cancelled state.' : 'Optional task branch: task-9 → working → completed → baseline evidence available.';
+      const taskRoutes = [route(clientToServer,'optional tools/call'),route(serverToClient,'server-created task handle'),route(clientToServer,'tasks/get · working')];
+      taskRoutes.push(...(cancel ? [route(clientToServer,'tasks/cancel'),route(serverToClient,'simulated cancelled state')] : [route(serverToClient,'tasks/update · completed'),route(serverToClient,'extension-defined final output · baseline 41 / 1')]));
+      playRoutes(taskRoutes,false);
+    }
+    $('previous').addEventListener('click',() => navigate(currentStep-1));
+    $('next').addEventListener('click',() => navigate(currentStep+1));
+    $('restart').addEventListener('click',() => { $('task-status').textContent = 'Extension negotiated separately. Earlier experimental core Tasks are a different model.'; navigate(0); });
+    $('autoplay').addEventListener('click',() => setPlaying(!isPlaying));
+    $('simple-view').addEventListener('click',() => setView('simple'));
+    $('protocol-view').addEventListener('click',() => setView('protocol'));
+    $('current-mode').addEventListener('click',() => setLifecycle('current'));
+    $('historical-mode').addEventListener('click',() => setLifecycle('historical'));
+    $('inspect').addEventListener('click',() => {
+      const opening = $('inspector-body').hidden;
+      $('inspector-body').hidden = !opening; $('inspect').setAttribute('aria-expanded',String(opening));
+    });
+    $('task-trace').addEventListener('click',() => taskBranch(false));
+    $('task-cancel').addEventListener('click',() => taskBranch(true));
+    document.addEventListener('keydown',event => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || /INPUT|TEXTAREA|SELECT/.test(event.target.tagName)) return;
+      if (event.key === 'ArrowRight') { event.preventDefault(); navigate(currentStep+1); }
+      if (event.key === 'ArrowLeft') { event.preventDefault(); navigate(currentStep-1); }
+    });
+    new ResizeObserver(() => renderNodes()).observe($('architecture'));
+    document.addEventListener('visibilitychange',() => { if (document.hidden) setPlaying(false); });
+    renderStep();
+  </script>
+</body>
+</html>
